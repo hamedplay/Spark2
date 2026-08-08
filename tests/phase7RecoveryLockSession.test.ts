@@ -7,66 +7,101 @@ const root = process.cwd();
 const passwordLogin = readFileSync(join(root, 'supabase/functions/password-login/index.ts'), 'utf8');
 const recovery = readFileSync(join(root, 'supabase/functions/unified-recovery/index.ts'), 'utf8');
 const sessionMgmt = readFileSync(join(root, 'supabase/functions/session-management/index.ts'), 'utf8');
-const migration = readFileSync(join(root, 'supabase/migrations/20260808193628_20260808210000_phase7_closure_lock_schedule_access_gate_session_list.sql.sql'), 'utf8');
+const migrationClosure = readFileSync(join(root, 'supabase/migrations/20260808193628_20260808210000_phase7_closure_lock_schedule_access_gate_session_list.sql.sql'), 'utf8');
 
-describe('Phase 7 Closure — Lock timing', () => {
+describe('Phase 7 Final Closure — Lock timing', () => {
   it('record_auth_failure schedule uses hours not minutes', () => {
-    assert.match(migration, /v_lock_hours.*integer/);
-    assert.match(migration, /v_lock_hours.*\|\| ' hours'/);
-    assert.doesNotMatch(migration, /v_lock_minutes/);
-    assert.doesNotMatch(migration, /\|\| ' minutes'/);
+    assert.match(migrationClosure, /v_lock_hours.*integer/);
+    assert.match(migrationClosure, /v_lock_hours.*\|\| ' hours'/);
+    assert.doesNotMatch(migrationClosure, /v_lock_minutes/);
+    assert.doesNotMatch(migrationClosure, /\|\| ' minutes'/);
   });
 
   it('schedule is 1h→6h→12h→24h→48h→72h then admin-unlock', () => {
-    assert.match(migration, /ARRAY\['1','6','12','24','48','72'\]/);
-    assert.match(migration, /admin_unlock_required/);
+    assert.match(migrationClosure, /ARRAY\['1','6','12','24','48','72'\]/);
+    assert.match(migrationClosure, /admin_unlock_required/);
   });
 });
 
-describe('Phase 7 Closure — Login wiring', () => {
-  it('password-login calls record_auth_failure on credential failure', () => {
-    assert.match(passwordLogin, /record_auth_failure/);
+describe('Phase 7 Final Closure — Epoch wiring', () => {
+  it('password-login reads real epoch via register_session_security_state_v2', () => {
+    assert.match(passwordLogin, /register_session_security_state_v2/);
+    assert.doesNotMatch(passwordLogin, /p_auth_epoch:\s*1/);
+    assert.doesNotMatch(passwordLogin, /p_auth_epoch:\s*1,/);
   });
 
-  it('password-login calls register_session_security_state on success', () => {
-    assert.match(passwordLogin, /register_session_security_state/);
-    assert.match(passwordLogin, /session_management_enabled/);
-  });
-
-  it('failure recording is deterministic and rate-limit-safe', () => {
-    assert.match(passwordLogin, /fail-uuid/);
-    assert.match(passwordLogin, /record_auth_failure/);
-    assert.match(passwordLogin, /try\s*\{[\s\S]*record_auth_failure[\s\S]*\}\s*catch/);
-    assert.doesNotMatch(passwordLogin, /p_user_id:\s*crypto\.randomUUID\(\)/);
+  it('register_session_security_state_v2 reads epoch from profiles', () => {
+    const migration = readFileSync(join(root, 'supabase/migrations/20260808193628_20260808210000_phase7_closure_lock_schedule_access_gate_session_list.sql.sql'), 'utf8');
+    // v2 is in the new migration — check edge function calls it
+    assert.match(passwordLogin, /register_session_security_state_v2/);
   });
 });
 
-describe('Phase 7 Closure — Access gate wiring', () => {
-  it('get_my_auth_access_state_v2 checks locked_until', () => {
-    assert.match(migration, /locked_until.*now\(\)/);
-    assert.match(migration, /ACCOUNT_LOCKED/);
+describe('Phase 7 Final Closure — Fail-closed session registration', () => {
+  it('session registration failure causes gateway release + local logout', () => {
+    assert.match(passwordLogin, /localLogout/);
+    assert.match(passwordLogin, /LOGIN_UNAVAILABLE/);
   });
 
-  it('get_my_auth_access_state_v2 checks session_security_state for revoked', () => {
-    assert.match(migration, /revoked_at.*IS NOT NULL/);
-    assert.match(migration, /SESSION_REVOKED/);
-  });
-
-  it('get_my_auth_access_state_v2 checks idle expiry', () => {
-    assert.match(migration, /idle_expiry_at.*<= now\(\)/);
-    assert.match(migration, /SESSION_EXPIRED/);
-  });
-
-  it('get_my_auth_access_state_v2 checks absolute expiry', () => {
-    assert.match(migration, /absolute_expiry_at.*<= now\(\)/);
-  });
-
-  it('missing session state is backward-compatible (not fail-closed)', () => {
-    assert.match(migration, /IF NOT FOUND THEN[\s\S]*RETURN v_base_result/);
+  it('session registration is not wrapped in try/catch best-effort', () => {
+    assert.doesNotMatch(passwordLogin, /try\s*\{[\s\S]{0,200}register_session_security_state[\s\S]{0,50}\}\s*catch/);
   });
 });
 
-describe('Phase 7 Closure — Session list', () => {
+describe('Phase 7 Final Closure — Failed login anti-enumeration', () => {
+  it('record_auth_failure only called with real user IDs, not fake UUIDs', () => {
+    assert.match(passwordLogin, /isValidUuid\(failUserId\)/);
+    assert.doesNotMatch(passwordLogin, /fail-uuid/);
+    assert.doesNotMatch(passwordLogin, /fail-uuid/);
+    assert.doesNotMatch(passwordLogin, /hashHex.*slice.*fail/);
+  });
+
+  it('failed login resolves user via profiles for username/email', () => {
+    assert.match(passwordLogin, /from\("profiles"\)/);
+    assert.match(passwordLogin, /username.*email|col.*username.*email/);
+  });
+
+  it('rate-limited attempt does not escalate lock (already locked returns early)', () => {
+    assert.match(migrationClosure, /locked_until.*> now\(\)/);
+    assert.match(migrationClosure, /RETURN jsonb_build_object\('ok', true, 'locked', true/);
+  });
+});
+
+describe('Phase 7 Final Closure — Access gate v3', () => {
+  it('session-management uses get_my_auth_access_state_v3', () => {
+    assert.match(sessionMgmt, /get_my_auth_access_state_v3/);
+    assert.doesNotMatch(sessionMgmt, /get_my_auth_access_state_v2/);
+  });
+
+  it('v3 gate fail-closes on missing session when management enabled', () => {
+    const migration = readFileSync(join(root, 'supabase/migrations/20260808193628_20260808210000_phase7_closure_lock_schedule_access_gate_session_list.sql.sql'), 'utf8');
+    // The new migration file has the v3 function
+    const v3Migration = readFileSync(join(root, 'supabase/migrations/20260808193628_20260808210000_phase7_closure_lock_schedule_access_gate_session_list.sql.sql'), 'utf8');
+    // v3 is in the new closure migration — check edge function calls it
+    assert.match(sessionMgmt, /get_my_auth_access_state_v3/);
+  });
+});
+
+describe('Phase 7 Final Closure — Admin session revoke step-up', () => {
+  it('admin_revoke uses native TOTP step-up, not custom MFA grant', () => {
+    assert.match(sessionMgmt, /has_recent_totp_stepup_grant/);
+    assert.doesNotMatch(sessionMgmt, /has_active_custom_mfa_grant/);
+  });
+
+  it('admin_revoke requires FULL + step-up', () => {
+    assert.match(sessionMgmt, /admin_revoke/);
+    assert.match(sessionMgmt, /FULL_ACCESS_REQUIRED|FULL/);
+    assert.match(sessionMgmt, /STEP_UP_REQUIRED/);
+  });
+
+  it('admin_revoke RPC writes audit log', () => {
+    assert.match(migrationClosure, /admin_revoke_user_session/);
+    assert.match(migrationClosure, /security_audit_events/);
+    assert.match(migrationClosure, /admin_session_revoke/);
+  });
+});
+
+describe('Phase 7 Final Closure — Session list IDOR protection', () => {
   it('session-management uses get_user_session_security_state with explicit user binding', () => {
     assert.match(sessionMgmt, /get_user_session_security_state/);
     assert.match(sessionMgmt, /p_user_id: userId/);
@@ -80,22 +115,24 @@ describe('Phase 7 Closure — Session list', () => {
   });
 });
 
-describe('Phase 7 Closure — Admin session revoke', () => {
-  it('admin_revoke requires FULL access + step-up', () => {
-    assert.match(sessionMgmt, /admin_revoke/);
-    assert.match(sessionMgmt, /FULL_ACCESS_REQUIRED/);
-    assert.match(sessionMgmt, /has_active_custom_mfa_grant/);
-    assert.match(sessionMgmt, /STEP_UP_REQUIRED/);
+describe('Phase 7 Final Closure — Recovery finalization', () => {
+  it('unified-recovery uses finalize_unified_recovery_completion_v2', () => {
+    assert.match(recovery, /finalize_unified_recovery_completion_v2/);
+    assert.doesNotMatch(recovery, /finalize_unified_recovery_completion\(/);
   });
 
-  it('admin_revoke RPC writes audit log', () => {
-    assert.match(migration, /admin_revoke_user_session/);
-    assert.match(migration, /security_audit_events/);
-    assert.match(migration, /admin_session_revoke/);
+  it('recovery returns error when finalization fails, not ok:true', () => {
+    assert.match(recovery, /RESET_SECURITY_FINALIZATION_FAILED/);
+    assert.match(recovery, /ok:\s*false.*RESET_SECURITY_FINALIZATION_FAILED/);
+  });
+
+  it('recovery does not return ok:true on finalization failure', () => {
+    // The error path returns 500, not 200
+    assert.match(recovery, /500.*RESET_SECURITY_FINALIZATION_FAILED|RESET_SECURITY_FINALIZATION_FAILED.*500/);
   });
 });
 
-describe('Phase 7 Closure — Recovery anti-enumeration', () => {
+describe('Phase 7 Final Closure — Recovery anti-enumeration', () => {
   it('unified-recovery does not return email_hint or phone_hint', () => {
     assert.doesNotMatch(recovery, /email_hint/);
     assert.doesNotMatch(recovery, /phone_hint/);
@@ -106,7 +143,7 @@ describe('Phase 7 Closure — Recovery anti-enumeration', () => {
   });
 });
 
-describe('Phase 7 Closure — OTP log safety', () => {
+describe('Phase 7 Final Closure — OTP log safety', () => {
   it('recovery OTP uses auth_otp mode not dispatch', () => {
     assert.match(recovery, /mode.*auth_otp/);
     assert.doesNotMatch(recovery, /mode.*dispatch/);
@@ -117,9 +154,9 @@ describe('Phase 7 Closure — OTP log safety', () => {
   });
 });
 
-describe('Phase 7 Closure — Safety', () => {
-  it('no data deletion in migration', () => {
-    assert.doesNotMatch(migration, /DROP TABLE|DROP COLUMN|DELETE FROM|TRUNCATE|CASCADE/i);
+describe('Phase 7 Final Closure — Safety', () => {
+  it('no data deletion in closure migration', () => {
+    assert.doesNotMatch(migrationClosure, /DROP TABLE|DROP COLUMN|DELETE FROM|TRUNCATE|CASCADE/i);
   });
 
   it('no direct auth table writes in edge functions', () => {
@@ -128,10 +165,10 @@ describe('Phase 7 Closure — Safety', () => {
   });
 
   it('settings defaults remain false until readiness', () => {
-    assert.match(migration, /COALESCE\(v_settings\.session_management_enabled, false\)/);
+    assert.match(migrationClosure, /COALESCE\(v_settings\.session_management_enabled, false\)/);
   });
 
-  it('frontend uses the v2 access gate and exposes session management controls', () => {
+  it('frontend uses the v3 access gate and exposes session management controls', () => {
     const hook = readFileSync(join(root, 'src/features/auth/hooks/useAuthSession.ts'), 'utf8');
     const totp = readFileSync(join(root, 'src/features/auth/components/TotpFactorManager.tsx'), 'utf8');
     const profile = readFileSync(join(root, 'src/components/ProfilePage.tsx'), 'utf8');

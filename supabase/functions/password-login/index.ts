@@ -324,15 +324,19 @@ Deno.serve(async (req: Request) => {
           const resolveRow2 = Array.isArray(resolveData2) ? resolveData2[0] : resolveData2;
           failUserId = resolveRow2?.user_id ?? null;
         }
-        if (!failUserId) {
-          const hashHex = await hmacSha256Hex(pepper, `password-login|fail-uuid|${identifierHash}`);
-          failUserId = `${hashHex.slice(0,8)}-${hashHex.slice(8,12)}-${hashHex.slice(12,16)}-${hashHex.slice(16,20)}-${hashHex.slice(20,32)}`;
+        if (!failUserId && (method === "username" || method === "email")) {
+          const col = method === "username" ? "username" : "email";
+          const { data: profileRow } = await admin.from("profiles")
+            .select("user_id").eq(col, canonicalIdentifier).maybeSingle();
+          failUserId = profileRow?.user_id ?? null;
         }
-        await admin.rpc("record_auth_failure", {
-          p_user_id: failUserId,
-          p_identifier_hash: identifierHash,
-          p_ip_hash: ipHash,
-        });
+        if (failUserId && isValidUuid(failUserId)) {
+          await admin.rpc("record_auth_failure", {
+            p_user_id: failUserId,
+            p_identifier_hash: identifierHash,
+            p_ip_hash: ipHash,
+          });
+        }
       } catch { /* rate-limit-safe: never block on audit failure */ }
       await randomDelay();
       return json({ error: "INVALID_CREDENTIALS" }, 401, allowedOrigin);
@@ -400,26 +404,27 @@ Deno.serve(async (req: Request) => {
       return json({ error: "LOGIN_UNAVAILABLE" }, 503, allowedOrigin);
     }
 
-    // Wire register_session_security_state on successful login
-    try {
-      const { data: settingsData } = await admin.from("auth_security_settings")
-        .select("session_management_enabled, session_idle_timeout_minutes, session_absolute_lifetime_minutes")
-        .eq("id", 1).maybeSingle();
-      if (settingsData?.session_management_enabled) {
-        const idleMinutes = settingsData.session_idle_timeout_minutes ?? 480;
-        const absoluteMinutes = settingsData.session_absolute_lifetime_minutes ?? 1440;
-        const deviceSummary = req.headers.get("user-agent")?.slice(0, 200) ?? "unknown";
-        await admin.rpc("register_session_security_state", {
-          p_session_id: sessionId,
-          p_user_id: userId,
-          p_auth_epoch: 1,
-          p_idle_timeout_minutes: idleMinutes,
-          p_absolute_lifetime_minutes: absoluteMinutes,
-          p_device_summary: deviceSummary,
-          p_ip_hash: ipHash,
-        });
+    // Wire register_session_security_state_v2 on successful login (fail-closed)
+    const { data: settingsData } = await admin.from("auth_security_settings")
+      .select("session_management_enabled, session_idle_timeout_minutes, session_absolute_lifetime_minutes")
+      .eq("id", 1).maybeSingle();
+    if (settingsData?.session_management_enabled) {
+      const idleMinutes = settingsData.session_idle_timeout_minutes ?? 480;
+      const absoluteMinutes = settingsData.session_absolute_lifetime_minutes ?? 1440;
+      const deviceSummary = req.headers.get("user-agent")?.slice(0, 200) ?? "unknown";
+      const { data: regData, error: regErr } = await admin.rpc("register_session_security_state_v2", {
+        p_session_id: sessionId,
+        p_user_id: userId,
+        p_idle_timeout_minutes: idleMinutes,
+        p_absolute_lifetime_minutes: absoluteMinutes,
+        p_device_summary: deviceSummary,
+        p_ip_hash: ipHash,
+      });
+      if (regErr || !regData?.ok) {
+        await localLogout(accessToken);
+        return json({ error: "LOGIN_UNAVAILABLE" }, 503, allowedOrigin);
       }
-    } catch { /* session registration is best-effort; don't block login */ }
+    }
 
     return json(
       {

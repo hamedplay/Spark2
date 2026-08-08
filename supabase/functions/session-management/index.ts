@@ -100,14 +100,14 @@ Deno.serve(async (req: Request) => {
       if (!body2.target_user_id) return json({ ok: false, error: "TARGET_USER_ID_REQUIRED" }, 400);
 
       // Verify admin has FULL access + step-up grant
-      const { data: accessState } = await admin.rpc("get_my_auth_access_state_v2");
+      const { data: accessState } = await admin.rpc("get_my_auth_access_state_v3");
       if (!accessState || accessState.access_level !== 'FULL') {
         return json({ ok: false, error: 'FULL_ACCESS_REQUIRED' }, 403);
       }
-      const { data: grantCheck } = await admin.rpc("has_active_custom_mfa_grant", {
+      const { data: totpGrant } = await admin.rpc("has_recent_totp_stepup_grant", {
         p_user_id: userId, p_session_id: sessionId,
       });
-      if (!grantCheck) return json({ ok: false, error: 'STEP_UP_REQUIRED' }, 403);
+      if (!totpGrant) return json({ ok: false, error: 'STEP_UP_REQUIRED' }, 403);
 
       const { data, error } = await admin.rpc("admin_revoke_user_session", {
         p_admin_user_id: userId,

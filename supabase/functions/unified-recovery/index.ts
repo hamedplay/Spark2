@@ -220,16 +220,15 @@ Deno.serve(async (req: Request) => {
         return json({ ok: false, error: "RESET_FAILED" }, 500);
       }
 
-      // Finalize: increment epoch, revoke grants
-      const { data: finalizeResult, error: finalizeError } = await admin.rpc("finalize_unified_recovery_completion", {
+      // Finalize: increment epoch, revoke grants — fail-closed if finalization fails
+      const { data: finalizeResult, error: finalizeError } = await admin.rpc("finalize_unified_recovery_completion_v2", {
         p_challenge_id: body.challenge_id, p_claim_id: claimId, p_success: true,
       });
       if (finalizeError || !finalizeResult?.ok) {
-        // Password was changed but finalization failed — log audit
-        await admin.from("audit_log").insert({ user_id: targetUserId, action: "recovery_finalize_failed", severity: "error" });
+        // Password was changed but security finalization failed — do NOT return ok:true
+        // The durable repair state is recorded in the challenges table
+        return json({ ok: false, error: "RESET_SECURITY_FINALIZATION_FAILED" }, 500);
       }
-
-      await admin.from("audit_log").insert({ user_id: targetUserId, action: "unified_password_recovery", severity: "info" });
 
       await padTiming(1500, 1700);
       return json({ ok: true });
