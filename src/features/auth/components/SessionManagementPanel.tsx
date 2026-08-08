@@ -43,7 +43,23 @@ export function SessionManagementPanel() {
     try {
       const { data, error: fnError } = await supabase.functions.invoke('session-management', {
         method: 'POST',
-        body: { mode: 'revoke', session_id: sessionId },
+        body: { mode: 'revoke_one', session_id: sessionId },
+      });
+      if (fnError || !data?.ok) throw new Error(data?.error ?? 'REVOKE_FAILED');
+      await loadSessions();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'REVOKE_FAILED');
+    } finally {
+      setRevoking(null);
+    }
+  };
+
+  const revokeOthers = async () => {
+    setRevoking('others');
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke('session-management', {
+        method: 'POST',
+        body: { mode: 'revoke_others' },
       });
       if (fnError || !data?.ok) throw new Error(data?.error ?? 'REVOKE_FAILED');
       await loadSessions();
@@ -77,13 +93,22 @@ export function SessionManagementPanel() {
     <div className="space-y-4" dir="rtl">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">مدیریت نشست‌ها</h3>
-        <button
-          onClick={revokeAll}
-          disabled={revoking === 'all'}
-          className="px-3 py-1.5 text-sm text-red-600 border border-red-300 rounded-lg hover:bg-red-50 disabled:opacity-50"
-        >
-          {revoking === 'all' ? '...' : 'لغو همه نشست‌ها'}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={revokeOthers}
+            disabled={revoking !== null}
+            className="px-3 py-1.5 text-sm text-amber-700 border border-amber-300 rounded-lg hover:bg-amber-50 disabled:opacity-50"
+          >
+            {revoking === 'others' ? '...' : 'لغو سایر نشست‌ها'}
+          </button>
+          <button
+            onClick={revokeAll}
+            disabled={revoking !== null}
+            className="px-3 py-1.5 text-sm text-red-600 border border-red-300 rounded-lg hover:bg-red-50 disabled:opacity-50"
+          >
+            {revoking === 'all' ? '...' : 'لغو همه نشست‌ها'}
+          </button>
+        </div>
       </div>
 
       {sessions.length === 0 ? (

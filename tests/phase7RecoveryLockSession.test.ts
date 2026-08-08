@@ -33,8 +33,11 @@ describe('Phase 7 Closure — Login wiring', () => {
     assert.match(passwordLogin, /session_management_enabled/);
   });
 
-  it('failure recording is rate-limit-safe (wrapped in try/catch)', () => {
+  it('failure recording is deterministic and rate-limit-safe', () => {
+    assert.match(passwordLogin, /fail-uuid/);
+    assert.match(passwordLogin, /record_auth_failure/);
     assert.match(passwordLogin, /try\s*\{[\s\S]*record_auth_failure[\s\S]*\}\s*catch/);
+    assert.doesNotMatch(passwordLogin, /p_user_id:\s*crypto\.randomUUID\(\)/);
   });
 });
 
@@ -71,6 +74,9 @@ describe('Phase 7 Closure — Session list', () => {
 
   it('session-management does not call auth.uid()-dependent RPC without user binding', () => {
     assert.doesNotMatch(sessionMgmt, /get_my_session_security_state/);
+    assert.match(sessionMgmt, /revoke_session_security_state/);
+    assert.match(sessionMgmt, /revoke_other_sessions/);
+    assert.match(sessionMgmt, /revoke_all_sessions/);
   });
 });
 
@@ -123,5 +129,18 @@ describe('Phase 7 Closure — Safety', () => {
 
   it('settings defaults remain false until readiness', () => {
     assert.match(migration, /COALESCE\(v_settings\.session_management_enabled, false\)/);
+  });
+
+  it('frontend uses the v2 access gate and exposes session management controls', () => {
+    const hook = readFileSync(join(root, 'src/features/auth/hooks/useAuthSession.ts'), 'utf8');
+    const totp = readFileSync(join(root, 'src/features/auth/components/TotpFactorManager.tsx'), 'utf8');
+    const profile = readFileSync(join(root, 'src/components/ProfilePage.tsx'), 'utf8');
+    const panel = readFileSync(join(root, 'src/features/auth/components/SessionManagementPanel.tsx'), 'utf8');
+    assert.match(hook, /get_my_auth_access_state_v2/);
+    assert.match(totp, /get_my_auth_access_state_v2/);
+    assert.match(profile, /SessionManagementPanel/);
+    assert.match(panel, /revoke_one/);
+    assert.match(panel, /revoke_others/);
+    assert.match(panel, /revoke_all/);
   });
 });

@@ -55,7 +55,7 @@ export function useAuthSession(): AuthSessionState {
         return;
       }
 
-      const { data, error } = await supabase.rpc('get_my_auth_access_state');
+      const { data, error } = await supabase.rpc('get_my_auth_access_state_v2');
       if (gen !== generationRef.current) return;
 
       if (error || !data) {

@@ -40,7 +40,7 @@ export function TotpFactorManager() {
       const { data: aalData } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
       setCurrentAal(aalData?.currentLevel ?? '');
 
-      const { data: accessState } = await supabase.rpc('get_my_auth_access_state' as never) as { data: unknown };
+      const { data: accessState } = await supabase.rpc('get_my_auth_access_state_v2' as never) as { data: unknown };
       setMfaRequired((accessState as { mfa_required?: boolean })?.mfa_required ?? false);
     } catch {
       // best-effort

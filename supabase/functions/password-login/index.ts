@@ -314,14 +314,22 @@ Deno.serve(async (req: Request) => {
 
     if (signInResult.error || !signInResult.data.session || !signInResult.data.user) {
       // Wire record_auth_failure on real credential failure (rate-limit-safe: only after rate limit passed)
+      // Use the real user_id when available (phone method resolves it before signIn);
+      // for username/email, derive a deterministic UUID from identifierHash so repeated
+      // failures on the same identifier accumulate correctly.
       try {
-        const failUserId = signInResult.error?.message?.includes("not confirmed") ? null : null;
-        // We don't have the user_id for invalid creds, but we still record the failure for lockout tracking
-        // record_auth_failure requires p_user_id — we pass a deterministic UUID derived from identifier hash
-        // so repeated failures on the same identifier accumulate correctly
-        const dummyUserId = crypto.randomUUID();
+        let failUserId: string | null = null;
+        if (method === "phone") {
+          const { data: resolveData2 } = await admin.rpc("resolve_phone_password_login_v1", { p_normalized_phone: canonicalIdentifier });
+          const resolveRow2 = Array.isArray(resolveData2) ? resolveData2[0] : resolveData2;
+          failUserId = resolveRow2?.user_id ?? null;
+        }
+        if (!failUserId) {
+          const hashHex = await hmacSha256Hex(pepper, `password-login|fail-uuid|${identifierHash}`);
+          failUserId = `${hashHex.slice(0,8)}-${hashHex.slice(8,12)}-${hashHex.slice(12,16)}-${hashHex.slice(16,20)}-${hashHex.slice(20,32)}`;
+        }
         await admin.rpc("record_auth_failure", {
-          p_user_id: dummyUserId,
+          p_user_id: failUserId,
           p_identifier_hash: identifierHash,
           p_ip_hash: ipHash,
         });

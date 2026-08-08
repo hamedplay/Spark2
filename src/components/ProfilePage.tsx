@@ -10,6 +10,7 @@ import { TelegramConnectSection } from './Profile/TelegramConnectSection';
 import type { OrgPositionInfo, Profile } from './Profile/types';
 import { empty, LEVEL_LABELS, inp, inpDisabled } from './Profile/types';
 import { TotpFactorManager } from '../features/auth/components/TotpFactorManager';
+import { SessionManagementPanel } from '../features/auth/components/SessionManagementPanel';
 
 export function ProfilePage() {
   const [loading, setLoading] = useState(true);
@@ -467,8 +468,11 @@ export function ProfilePage() {
       <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden mt-4">
         <SectionHeader id="security" title="امنیت حساب" subtitle="مدیریت احراز هویت دومرحله‌ای (TOTP)" />
         {openSection === 'security' && (
-          <div className="p-6">
+          <div className="p-6 space-y-6">
             <TotpFactorManager />
+            <div className="border-t border-gray-100 dark:border-gray-700 pt-6">
+              <SessionManagementPanel />
+            </div>
           </div>
         )}
       </div>
