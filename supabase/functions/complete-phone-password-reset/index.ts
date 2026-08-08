@@ -73,6 +73,24 @@ Deno.serve(async (req: Request) => {
     { auth: { autoRefreshToken: false, persistSession: false } },
   );
 
+  // ── Phase 7 Canonical Readiness: return 410 if unified recovery is enabled ──
+  if (req.method === "POST" || req.method === "OPTIONS") {
+    try {
+      const { data: settings } = await supabase
+        .from("auth_security_settings")
+        .select("unified_recovery_enabled")
+        .eq("id", 1)
+        .maybeSingle();
+      if (settings?.unified_recovery_enabled === true) {
+        const cors = corsHeaders(req.headers.get("Origin") || null);
+        return new Response(
+          JSON.stringify({ ok: false, error: "ROUTE_REPLACED", replacement: "unified-recovery" }),
+          { status: 410, headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" } },
+        );
+      }
+    } catch { /* fail-open: allow legacy route if settings unreadable */ }
+  }
+
   // ── Load allowed origins from system_config ─────────────────────────────────
   let allowedOrigins: string[] = [];
   try {

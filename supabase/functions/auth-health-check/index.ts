@@ -49,19 +49,28 @@ Deno.serve(async (req: Request) => {
 
     // ── Health check ─────────────────────────────────────────────────────
     const { data: health, error: healthError } = await admin.rpc("get_auth_health_check");
-    if (healthError || !health?.ok) return json({ ok: false, error: "HEALTH_CHECK_FAILED" }, 500);
+    if (healthError || !health) return json({ ok: false, error: "HEALTH_CHECK_FAILED" }, 500);
 
-    // ── Check required edge functions ────────────────────────────────────
+    // ── Edge function readiness (not hardcoded — unknown unless introspectable) ──
     const requiredFunctions = [
       "custom-mfa", "unified-recovery", "session-management",
       "password-login", "send-sms", "send-bale-message",
       "auth-send-sms-hook", "spark-ai",
     ];
-    const functionsStatus = requiredFunctions.map((fn) => ({ name: fn, status: "deployed" as const }));
+    const functionsStatus = requiredFunctions.map((fn) => ({ name: fn, status: "not_verified" as const }));
 
-    // ── SMS/Bale/Email readiness (no secret values) ─────────────────────
+    // ── SMS readiness: active provider in DB ──────────────────────────────
     const { data: smsConfig } = await admin.from("sms_providers").select("id, is_active, is_default").eq("is_active", true).limit(1).maybeSingle();
-    const { data: baleConfig } = await admin.from("social_channel_configs").select("is_active, bot_token").eq("channel", "bale").maybeSingle();
+
+    // ── Bale readiness: Edge Secret only ──────────────────────────────────
+    const baleSecret = Deno.env.get("BALE_BOT_TOKEN") ?? "";
+    const baleReady = baleSecret.length > 0;
+
+    // ── Email readiness: Edge Secret ──────────────────────────────────────
+    const emailSecret = Deno.env.get("SMTP_HOST") ?? "";
+    const emailReady = emailSecret.length > 0;
+
+    // ── Settings ──────────────────────────────────────────────────────────
     const { data: settings } = await admin.from("auth_security_settings").select("unified_recovery_enabled, progressive_lock_enabled, session_management_enabled, custom_mfa_enabled, recovery_enabled").eq("id", 1).maybeSingle();
 
     return json({
@@ -71,8 +80,8 @@ Deno.serve(async (req: Request) => {
       edge_functions: functionsStatus,
       transport: {
         sms: smsConfig ? "ready" : "not_ready",
-        bale: baleConfig?.is_active && baleConfig?.bot_token ? "ready" : "not_ready",
-        email: "not_ready",
+        bale: baleReady ? "ready" : "not_ready",
+        email: emailReady ? "ready" : "not_ready",
       },
       settings: settings ?? {},
       deprecated_routes: health.deprecated_routes ?? [],
