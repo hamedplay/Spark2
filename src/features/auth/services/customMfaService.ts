@@ -19,6 +19,26 @@ export function verifyCustomMfaRecovery(code: string): Promise<CustomMfaGrantRes
   return invoke<CustomMfaGrantResponse>({ mode: 'recovery', code });
 }
 
+export function resendCustomMfaChallenge(challengeId: string): Promise<{ ok: boolean }> {
+  return invoke<{ ok: boolean }>({ mode: 'resend', challenge_id: challengeId });
+}
+
+export function enrollSmsFactor(): Promise<{ ok: boolean; factor_id?: string }> {
+  return invoke<{ ok: boolean; factor_id?: string }>({ mode: 'enroll_sms' });
+}
+
+export function checkBaleLinkStatus(baleNonce: string): Promise<{ ok: boolean; factor_id?: string }> {
+  return invoke<{ ok: boolean; factor_id?: string }>({ mode: 'enroll_bale', bale_nonce: baleNonce });
+}
+
+export function disableCustomMfaFactor(factorType: CustomMfaFactor): Promise<{ ok: boolean }> {
+  return invoke<{ ok: boolean }>({ mode: 'disable', factor_type: factorType });
+}
+
+export function regenerateRecoveryCodes(): Promise<{ ok: boolean; codes: string[]; code_count: number }> {
+  return invoke<{ ok: boolean; codes: string[]; code_count: number }>({ mode: 'regenerate_recovery' });
+}
+
 export async function loadCustomMfaState(): Promise<CustomMfaState> {
   const { data, error } = await supabase.rpc('get_custom_mfa_state');
   if (error || !data) throw new Error('MFA_STATE_UNAVAILABLE');
