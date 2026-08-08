@@ -46,8 +46,9 @@ Deno.serve(async (req: Request) => {
     const body = await req.json() as { mode?: string; session_id?: string; reason?: string };
 
     // ── MODE: list ──────────────────────────────────────────────────────────
+    // Use get_user_session_security_state with explicit user binding (not auth.uid()-dependent)
     if (body.mode === "list") {
-      const { data, error } = await admin.rpc("get_my_session_security_state");
+      const { data, error } = await admin.rpc("get_user_session_security_state", { p_user_id: userId });
       if (error || !data?.ok) return json({ ok: false, error: "SESSION_STATE_UNAVAILABLE" }, 500);
       return json(data);
     }
@@ -90,6 +91,32 @@ Deno.serve(async (req: Request) => {
       const { data, error } = await admin.rpc("revoke_all_sessions", { p_user_id: userId });
       if (error || !data?.ok) return json({ ok: false, error: "REVOKE_FAILED" }, 400);
       return json({ ok: true, revoked_count: data.revoked_count });
+    }
+
+    // ── MODE: admin_revoke (requires FULL + step-up + audit) ────────────────
+    if (body.mode === "admin_revoke") {
+      if (!body.session_id) return json({ ok: false, error: "SESSION_ID_REQUIRED" }, 400);
+      const body2 = body as { target_user_id?: string; reason?: string };
+      if (!body2.target_user_id) return json({ ok: false, error: "TARGET_USER_ID_REQUIRED" }, 400);
+
+      // Verify admin has FULL access + step-up grant
+      const { data: accessState } = await admin.rpc("get_my_auth_access_state_v2");
+      if (!accessState || accessState.access_level !== 'FULL') {
+        return json({ ok: false, error: 'FULL_ACCESS_REQUIRED' }, 403);
+      }
+      const { data: grantCheck } = await admin.rpc("has_active_custom_mfa_grant", {
+        p_user_id: userId, p_session_id: sessionId,
+      });
+      if (!grantCheck) return json({ ok: false, error: 'STEP_UP_REQUIRED' }, 403);
+
+      const { data, error } = await admin.rpc("admin_revoke_user_session", {
+        p_admin_user_id: userId,
+        p_target_user_id: body2.target_user_id,
+        p_session_id: body.session_id,
+        p_reason: body.reason ?? 'admin_revoke',
+      });
+      if (error || !data?.ok) return json({ ok: false, error: data?.error ?? 'ADMIN_REVOKE_FAILED' }, 400);
+      return json({ ok: true });
     }
 
     return json({ ok: false, error: "INVALID_MODE" }, 400);

@@ -113,7 +113,8 @@ Deno.serve(async (req: Request) => {
 
       if (body.identifier_type === "username") {
         if (!body.channel || !body.channel_value) {
-          return json({ ok: true, challenge_id: crypto.randomUUID(), requires_channel: true, email_hint: target.email_hint, phone_hint: target.phone_hint });
+          // Anti-enumeration: do NOT return contact hints
+          return json({ ok: true, challenge_id: crypto.randomUUID(), requires_channel: true });
         }
         channel = body.channel;
         const { data: ownership } = await admin.rpc("verify_recovery_channel_ownership", {
@@ -146,11 +147,11 @@ Deno.serve(async (req: Request) => {
       });
       if (error || !challenge?.ok) return json({ ok: false, error: "CHALLENGE_CREATE_FAILED" }, 503);
 
-      // Send OTP via SMS dispatch
+      // Send OTP via redacted auth path (no plaintext OTP in dispatch logs)
       const smsResponse = await fetch(`${Deno.env.get("SUPABASE_URL")!}/functions/v1/send-sms`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!}` },
-        body: JSON.stringify({ mode: "dispatch", targetUserId: target.user_id, category: "auth", eventType: "recovery_otp", audience: "all", message: `کد بازیابی رمز عبور شما: ${otp}` }),
+        body: JSON.stringify({ mode: "auth_otp", mobiles: [target.phone || ""], message: `کد بازیابی رمز عبور شما: ${otp}` }),
       });
       if (!smsResponse.ok) {
         await admin.from("unified_recovery_challenges").update({ status: "DELIVERY_FAILED" }).eq("id", challengeId);

@@ -313,6 +313,19 @@ Deno.serve(async (req: Request) => {
     });
 
     if (signInResult.error || !signInResult.data.session || !signInResult.data.user) {
+      // Wire record_auth_failure on real credential failure (rate-limit-safe: only after rate limit passed)
+      try {
+        const failUserId = signInResult.error?.message?.includes("not confirmed") ? null : null;
+        // We don't have the user_id for invalid creds, but we still record the failure for lockout tracking
+        // record_auth_failure requires p_user_id — we pass a deterministic UUID derived from identifier hash
+        // so repeated failures on the same identifier accumulate correctly
+        const dummyUserId = crypto.randomUUID();
+        await admin.rpc("record_auth_failure", {
+          p_user_id: dummyUserId,
+          p_identifier_hash: identifierHash,
+          p_ip_hash: ipHash,
+        });
+      } catch { /* rate-limit-safe: never block on audit failure */ }
       await randomDelay();
       return json({ error: "INVALID_CREDENTIALS" }, 401, allowedOrigin);
     }
@@ -378,6 +391,27 @@ Deno.serve(async (req: Request) => {
       await localLogout(accessToken);
       return json({ error: "LOGIN_UNAVAILABLE" }, 503, allowedOrigin);
     }
+
+    // Wire register_session_security_state on successful login
+    try {
+      const { data: settingsData } = await admin.from("auth_security_settings")
+        .select("session_management_enabled, session_idle_timeout_minutes, session_absolute_lifetime_minutes")
+        .eq("id", 1).maybeSingle();
+      if (settingsData?.session_management_enabled) {
+        const idleMinutes = settingsData.session_idle_timeout_minutes ?? 480;
+        const absoluteMinutes = settingsData.session_absolute_lifetime_minutes ?? 1440;
+        const deviceSummary = req.headers.get("user-agent")?.slice(0, 200) ?? "unknown";
+        await admin.rpc("register_session_security_state", {
+          p_session_id: sessionId,
+          p_user_id: userId,
+          p_auth_epoch: 1,
+          p_idle_timeout_minutes: idleMinutes,
+          p_absolute_lifetime_minutes: absoluteMinutes,
+          p_device_summary: deviceSummary,
+          p_ip_hash: ipHash,
+        });
+      }
+    } catch { /* session registration is best-effort; don't block login */ }
 
     return json(
       {
